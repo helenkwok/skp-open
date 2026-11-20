@@ -1,0 +1,107 @@
+name: CI
+# Every action is pinned to a full commit SHA. Test inputs are public only: skpwright's corpus and
+# rvt-open's public models, fetched by tools/ci/fetch-fixtures.sh against pinned hashes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.98.0"
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: rustup toolchain install "$RUST_VERSION" --profile minimal -c rustfmt && rustup default "$RUST_VERSION"
+      - run: cargo fmt --check
+
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: rustup toolchain install "$RUST_VERSION" --profile minimal -c clippy && rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: rustup toolchain install "$RUST_VERSION" --profile minimal && rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fixtures
+          key: fixtures-${{ hashFiles('tools/ci/fetch-fixtures.sh', 'tools/ci/skpwright-corpus.sha256') }}
+      - run: tools/ci/fetch-fixtures.sh "$PWD/fixtures"
+      - name: Tests (counts and boxes against the fixtures)
+        env:
+          SKP_OPEN_FIXTURES: ${{ github.workspace }}/fixtures
+          SKP_OPEN_REQUIRE_FIXTURES: "1"
+        run: |
+          set -o pipefail
+          cargo test --locked --release -- --nocapture --test-threads=1 | tee test.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### Conversion counts'
+            echo '```'
+            grep -E '^(SKP|RVT) ' test.log | grep -E 'total|->' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cli:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: rustup toolchain install "$RUST_VERSION" --profile minimal && rustup default "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fixtures
+          key: fixtures-${{ hashFiles('tools/ci/fetch-fixtures.sh', 'tools/ci/skpwright-corpus.sha256') }}
+      - run: tools/ci/fetch-fixtures.sh "$PWD/fixtures"
+      - run: cargo build --locked --release
+      - name: Convert with the command-line tool
+        run: |
+          set -euo pipefail
+          B=target/release/skp-open
+          mkdir -p out
+          $B info fixtures/skp/2026/house-plus.skp
+          for e in ifc ifcx glb obj usda usdc frag dxf; do
+            $B convert fixtures/skp/2026/house-plus.skp "out/house-plus.$e"
+          done
+          ls -l out
+          # SketchUp files written from public Revit models, uploaded so they can be opened in SketchUp.
+          mkdir -p written
+          for m in fixtures/rvt/rvt-open-tiny-models-1/2024/*.rvt fixtures/rvt/architectural-2024.rvt; do
+            [ -f "$m" ] || continue
+            n=$(basename "$m" .rvt)
+            $B convert "$m" "written/$n-2026.skp"
+            $B convert "$m" "written/$n-2017.skp" --release 2017
+            $B info "written/$n-2026.skp"
+            $B info "written/$n-2017.skp"
+          done
+          ls -l written
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: written-skp
+          path: written/
+          retention-days: 14

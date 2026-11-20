@@ -1,0 +1,28 @@
+skp-open
+Copyright 2026 Helen Kwok
+Licensed under the GNU General Public License, version 3 only (see LICENSE).
+
+skp-open links skpwright, which is GPL-3.0-only, so skp-open is GPL-3.0-only.
+
+Dependencies and their licences
+-------------------------------
+skpwright 0.6.1 (GPL-3.0-only), https://github.com/hew3d/skpwright
+  The clean-room .skp reader and writer. Its test corpus is fetched, never
+  copied into this repository, by commit and sha256 (tools/ci/fetch-fixtures.sh).
+  The corpus is GPL-3.0-only except for third-party content embedded in the
+  .skp files (Trimble Content textures and the default template's scale-figure
+  component), which stays the property of its owners.
+
+rvt-open (Apache-2.0), https://github.com/helenkwok/rvt-open
+  Reads .rvt and writes IFC4, IFCX, glTF, OBJ, USD, Fragments and DXF. Used as a
+  git dependency pinned to a commit. rvt-open does not depend on skp-open. It
+  carries its own NOTICE, with the credits of the work it derives from.
+
+earcut 0.4.12 (MIT OR Apache-2.0), https://github.com/georust/earcut
+anyhow 1.0.104 (MIT OR Apache-2.0)
+serde_json 1.0.154 (MIT OR Apache-2.0), tests only
+  And the crates these pull in; `cargo tree` lists them, and Cargo.lock pins them.
+
+"SketchUp" is a trademark of Trimble Inc. and "Revit" of Autodesk, Inc. This
+project is not affiliated with or endorsed by either; the names identify the
+file formats it reads and writes.
