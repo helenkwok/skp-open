@@ -80,19 +80,42 @@ fn every_corpus_file_converts_with_its_counts_and_box() {
                 "{rel}: DXF faces"
             );
             let step = std::fs::read_to_string(out.join(format!("{name}.ifc"))).unwrap();
+            // One face set per element, except that a body drawing several textured
+            // materials is one face set per material (an IFC4 texture map lays one
+            // image on a whole face set).
+            let textured = |m: &usize| model.materials.get(*m).is_some_and(|i| i.texture.is_some());
+            let face_sets: usize = model
+                .entities
+                .iter()
+                .map(|e| match e {
+                    rvt::ifc::entities::IfcEntity::BuildingElement {
+                        solid_shape:
+                            Some(rvt::ifc::entities::SolidShape::TriangulatedFaceSet {
+                                vertices_feet,
+                                face_materials,
+                                uvs,
+                                ..
+                            }),
+                        ..
+                    } => {
+                        let mut drawn = face_materials.clone();
+                        drawn.sort_unstable();
+                        drawn.dedup();
+                        let split = !uvs.is_empty()
+                            && uvs.len() == vertices_feet.len()
+                            && drawn.iter().filter(|m| textured(m)).count() >= 2;
+                        if split { drawn.len() } else { 1 }
+                    }
+                    rvt::ifc::entities::IfcEntity::BuildingElement {
+                        solid_shape: Some(_),
+                        ..
+                    } => 1,
+                    _ => 0,
+                })
+                .sum();
             assert_eq!(
                 step.matches("IFCTRIANGULATEDFACESET(").count(),
-                model
-                    .entities
-                    .iter()
-                    .filter(|e| matches!(
-                        e,
-                        rvt::ifc::entities::IfcEntity::BuildingElement {
-                            solid_shape: Some(_),
-                            ..
-                        }
-                    ))
-                    .count(),
+                face_sets,
                 "{rel}: IFC face sets"
             );
             serde_json::from_str::<serde_json::Value>(
