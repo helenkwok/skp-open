@@ -42,6 +42,11 @@ pub struct FromSkpStats {
     pub attribute_sets: usize,
     /// Faces with no material of their own or inherited, drawn in the style's front colour.
     pub faces_default: usize,
+    /// Elements written as the IFC class SketchUp classified their definition as.
+    pub classified: usize,
+    /// Elements classified as an IFC class the writer cannot write, written as a proxy
+    /// (the classification stays in the `SKP_AppliedSchemaTypes` property set).
+    pub classified_unwritten: usize,
 }
 
 /// Map `model` to an [`IfcModel`] named `name`.
@@ -58,7 +63,7 @@ pub fn skp_to_model(model: &Model, name: &str) -> (IfcModel, FromSkpStats) {
     if let Some(root) = model.geometry.iter().position(|r| r.def_index.is_none()) {
         let identity = identity();
         if let Some(mesh) = w.mesh(root, &identity, 0) {
-            w.push_element("Model geometry".into(), &[], Some(mesh), 0, &[], &[]);
+            w.push_element("Model geometry".into(), &[], Some(mesh), 0, &[], &[], None);
         }
         w.children(root, &identity, 0, "", 0);
     }
@@ -237,6 +242,8 @@ struct Walk<'a> {
     instance_name: HashMap<u32, &'a str>,
     definition_of: HashMap<u32, usize>,
     sets: HashMap<usize, Vec<PropertySet>>,
+    /// The IFC class each classified definition names (`AppliedSchemaTypes`).
+    classes: HashMap<usize, String>,
     /// The material for unpainted faces, added on first use.
     default_material: Option<usize>,
 }
@@ -244,8 +251,12 @@ struct Walk<'a> {
 impl<'a> Walk<'a> {
     fn new(m: &'a Model) -> Self {
         let mut sets: HashMap<usize, Vec<PropertySet>> = HashMap::new();
+        let mut classes: HashMap<usize, String> = HashMap::new();
         for a in &m.dictionaries {
             if let Owner::Definition(d) = a.owner {
+                if let Some(class) = a.dictionaries.iter().find_map(applied_ifc_class) {
+                    classes.insert(d, class);
+                }
                 for dict in a.dictionaries.iter().filter(|d| !d.entries.is_empty()) {
                     sets.entry(d).or_default().push(PropertySet {
                         name: format!("SKP_{}", dict.name),
@@ -275,6 +286,7 @@ impl<'a> Walk<'a> {
                 .collect(),
             definition_of: m.definition_links.iter().copied().collect(),
             sets,
+            classes,
             default_material: None,
         }
     }
@@ -422,7 +434,8 @@ impl<'a> Walk<'a> {
                     PropertyValue::Text(def_name.unwrap_or_default().to_string()),
                 ),
             ];
-            if let Some(i) = self.push_element(name, &facts, own, p.pid, &kids, &sets) {
+            let class = def.and_then(|d| self.classes.get(&d)).cloned();
+            if let Some(i) = self.push_element(name, &facts, own, p.pid, &kids, &sets, class) {
                 out.push(i);
             }
         }
@@ -430,6 +443,7 @@ impl<'a> Walk<'a> {
     }
 
     /// The element for a mesh, a set of children or both; `None` when it holds neither.
+    #[allow(clippy::too_many_arguments)]
     fn push_element(
         &mut self,
         name: String,
@@ -438,9 +452,16 @@ impl<'a> Walk<'a> {
         pid: u32,
         kids: &[usize],
         sets: &[PropertySet],
+        class: Option<String>,
     ) -> Option<usize> {
         if body.is_none() && kids.is_empty() {
             return None;
+        }
+        let written = class.as_deref().and_then(writable_class);
+        match (&class, written) {
+            (Some(_), Some(_)) => self.st.classified += 1,
+            (Some(_), None) => self.st.classified_unwritten += 1,
+            _ => {}
         }
         let (shape, material_index) = match body {
             Some(b) => {
@@ -461,12 +482,13 @@ impl<'a> Walk<'a> {
         };
         let index = self.out.entities.len();
         self.out.entities.push(IfcEntity::BuildingElement {
-            ifc_type: if kids.is_empty() {
-                "IFCBUILDINGELEMENTPROXY"
-            } else {
-                "IFCELEMENTASSEMBLY"
-            }
-            .to_string(),
+            ifc_type: written
+                .unwrap_or(if kids.is_empty() {
+                    "IFCBUILDINGELEMENTPROXY"
+                } else {
+                    "IFCELEMENTASSEMBLY"
+                })
+                .to_string(),
             name,
             type_guid: (pid != 0).then(|| pid.to_string()),
             predefined_type: Some("NOTDEFINED".to_string()),
@@ -509,6 +531,71 @@ impl<'a> Walk<'a> {
     }
 }
 
+/// The IFC class an `AppliedSchemaTypes` dictionary names, as SketchUp records a
+/// classification on a definition: the schema's name ("IFC 2x3", "IFC 4") to the
+/// class ("IfcDoor"). Other schemas (national ones) are left to the property set.
+fn applied_ifc_class(d: &skpwright::Dictionary) -> Option<String> {
+    if d.name != "AppliedSchemaTypes" {
+        return None;
+    }
+    d.entries.iter().find_map(|(schema, v)| match v {
+        Value::Text(class)
+            if schema.to_ascii_uppercase().starts_with("IFC")
+                && class.to_ascii_uppercase().starts_with("IFC") =>
+        {
+            Some(class.trim().to_string())
+        }
+        _ => None,
+    })
+}
+
+/// The IFC4 entity a classification is written as, where rvt-open's STEP writer
+/// writes that entity's attributes in full; `None` for any other class (spatial
+/// elements, openings, distribution classes the writer has no attribute list for,
+/// IFC 2x3 classes IFC4 dropped), which stays a proxy.
+fn writable_class(class: &str) -> Option<&'static str> {
+    Some(match class.to_ascii_uppercase().as_str() {
+        // IFC 2x3's standard and elemented cases are their base class in IFC4, which
+        // holds no constraint on how the geometry is made.
+        "IFCWALL" | "IFCWALLSTANDARDCASE" | "IFCWALLELEMENTEDCASE" => "IFCWALL",
+        "IFCSLAB" | "IFCSLABSTANDARDCASE" | "IFCSLABELEMENTEDCASE" => "IFCSLAB",
+        "IFCBEAM" | "IFCBEAMSTANDARDCASE" => "IFCBEAM",
+        "IFCCOLUMN" | "IFCCOLUMNSTANDARDCASE" => "IFCCOLUMN",
+        "IFCMEMBER" | "IFCMEMBERSTANDARDCASE" => "IFCMEMBER",
+        "IFCPLATE" | "IFCPLATESTANDARDCASE" => "IFCPLATE",
+        "IFCDOOR" | "IFCDOORSTANDARDCASE" => "IFCDOOR",
+        "IFCWINDOW" | "IFCWINDOWSTANDARDCASE" => "IFCWINDOW",
+        // Tag and PredefinedType, as the writer writes any class it does not list.
+        "IFCBUILDINGELEMENTPROXY" => "IFCBUILDINGELEMENTPROXY",
+        "IFCBUILDINGELEMENTPART" => "IFCBUILDINGELEMENTPART",
+        "IFCCHIMNEY" => "IFCCHIMNEY",
+        "IFCCOVERING" => "IFCCOVERING",
+        "IFCCURTAINWALL" => "IFCCURTAINWALL",
+        "IFCFOOTING" => "IFCFOOTING",
+        "IFCRAILING" => "IFCRAILING",
+        "IFCRAMP" => "IFCRAMP",
+        "IFCRAMPFLIGHT" => "IFCRAMPFLIGHT",
+        "IFCROOF" => "IFCROOF",
+        "IFCSHADINGDEVICE" => "IFCSHADINGDEVICE",
+        "IFCSTAIR" => "IFCSTAIR",
+        "IFCDISCRETEACCESSORY" => "IFCDISCRETEACCESSORY",
+        "IFCFASTENER" => "IFCFASTENER",
+        "IFCTRANSPORTELEMENT" => "IFCTRANSPORTELEMENT",
+        "IFCFURNITURE" => "IFCFURNITURE",
+        "IFCSYSTEMFURNITUREELEMENT" => "IFCSYSTEMFURNITUREELEMENT",
+        "IFCGEOGRAPHICELEMENT" => "IFCGEOGRAPHICELEMENT",
+        "IFCDISTRIBUTIONCHAMBERELEMENT" => "IFCDISTRIBUTIONCHAMBERELEMENT",
+        // Classes the writer lists with their own attributes.
+        "IFCFURNISHINGELEMENT" => "IFCFURNISHINGELEMENT",
+        "IFCFLOWCONTROLLER" => "IFCFLOWCONTROLLER",
+        "IFCFLOWTERMINAL" => "IFCFLOWTERMINAL",
+        "IFCFLOWSEGMENT" => "IFCFLOWSEGMENT",
+        "IFCSTAIRFLIGHT" => "IFCSTAIRFLIGHT",
+        "IFCELEMENTASSEMBLY" => "IFCELEMENTASSEMBLY",
+        _ => return None,
+    })
+}
+
 fn property_value(v: &Value) -> PropertyValue {
     match v {
         Value::Text(s) => PropertyValue::Text(s.clone()),
@@ -518,5 +605,49 @@ fn property_value(v: &Value) -> PropertyValue {
         Value::Bool(b) => PropertyValue::Boolean(*b),
         Value::Time(t) => PropertyValue::Integer(i64::from(*t)),
         other => PropertyValue::Text(format!("{other:?}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn applied(entries: &[(&str, &str)]) -> skpwright::Dictionary {
+        skpwright::Dictionary {
+            name: "AppliedSchemaTypes".into(),
+            entries: entries
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), Value::Text((*v).to_string())))
+                .collect(),
+            flag: 0,
+        }
+    }
+
+    #[test]
+    fn classifications_map_to_ifc4_entities() {
+        let class = |e: &[(&str, &str)]| applied_ifc_class(&applied(e));
+        assert_eq!(class(&[("IFC 2x3", "IfcDoor")]).as_deref(), Some("IfcDoor"));
+        assert_eq!(
+            class(&[("Uniclass", "Pr_30"), ("IFC 4", "IfcWall")]).as_deref(),
+            Some("IfcWall")
+        );
+        assert_eq!(class(&[("Uniclass", "Pr_30")]), None);
+        let mut other = applied(&[("IFC 2x3", "IfcDoor")]);
+        other.name = "IFC 2x3".into();
+        assert_eq!(applied_ifc_class(&other), None);
+
+        assert_eq!(writable_class("IfcDoor"), Some("IFCDOOR"));
+        assert_eq!(writable_class("IfcWallStandardCase"), Some("IFCWALL"));
+        assert_eq!(writable_class("IFCSLAB"), Some("IFCSLAB"));
+        // Spatial, dropped in IFC4, or attributes the writer does not write.
+        for c in [
+            "IfcBuildingStorey",
+            "IfcSpace",
+            "IfcElectricalElement",
+            "IfcPile",
+            "IfcFlowFitting",
+        ] {
+            assert_eq!(writable_class(c), None, "{c}");
+        }
     }
 }
