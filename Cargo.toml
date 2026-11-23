@@ -14,7 +14,7 @@ publish = false
 skpwright = "=0.6.1"
 # Reads .rvt and writes every format below (Apache-2.0), pinned to a commit of its main branch.
 # rvt-open never depends on this crate.
-rvt-open = { git = "https://github.com/helenkwok/rvt-open", rev = "4aad512b59ab1cd2ea7f5675e9fd012b2b457060" }
+rvt-open = { git = "https://github.com/helenkwok/rvt-open", rev = "c1e4202db177a2aec1b41e88d2e42cee01bafaec" }
 # Cuts a face with holes into triangles (MIT OR Apache-2.0), the version rvt-open's lock holds.
 earcut = "=0.4.12"
 # Errors for the command-line tool.
