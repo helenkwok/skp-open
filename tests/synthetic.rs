@@ -15,6 +15,20 @@ fn a_built_model_converts_to_every_format() {
     assert_eq!(st.triangles, 52, "{st:?}");
     assert_eq!(st.elements, 5, "root box, two parts, two plates: {st:?}");
     assert_eq!(st.instances_skipped, 0);
+    // The parts' cubes and the plates have no material: SketchUp draws them in the
+    // style's front colour, not the writers' category grey.
+    assert_eq!(st.faces_default, 2 * (6 + 1), "{st:?}");
+    let front = skp
+        .rendering
+        .as_ref()
+        .map_or([255, 255, 255, 255], |r| r.front_color);
+    let default = model.materials.last().expect("a default material");
+    assert_eq!(default.name, "Default");
+    assert_eq!(
+        default.color_packed,
+        Some(u32::from(front[0]) | u32::from(front[1]) << 8 | u32::from(front[2]) << 16)
+    );
+    assert_eq!(model.materials.len(), skp.materials.len() + 1);
 
     let dir = common::scratch("synthetic");
     let mut sizes = Vec::new();
