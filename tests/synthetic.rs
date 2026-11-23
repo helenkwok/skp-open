@@ -289,5 +289,45 @@ fn textured_faces_carry_their_image_and_coordinates() {
         std::fs::read_to_string(dir.join("t.ifc")).unwrap()
     };
     assert!(step.contains("IFCBLOBTEXTURE(") && step.contains("IFCINDEXEDTRIANGLETEXTUREMAP("));
+
+    // IFCX: the main file keeps the colours; a layer beside it carries the
+    // coordinates, one [s, t] per point of each textured mesh, and the image.
+    let x = dir.join("ifcx");
+    std::fs::create_dir_all(&x).unwrap();
+    let notes = write_format(&model, Format::Ifcx, &x.join("t.ifcx")).unwrap();
+    assert!(
+        notes.iter().any(|n| n.contains("1 texture images")),
+        "{notes:?}"
+    );
+    let read = |p: &std::path::Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    };
+    let main = read(&x.join("t.ifcx"));
+    let layer = read(&x.join("t.textures.ifcx"));
+    assert_eq!(
+        layer["header"]["id"],
+        format!("{}/textures", main["header"]["id"].as_str().unwrap())
+    );
+    let data = layer["data"].as_array().expect("layer data");
+    assert!(!data.is_empty(), "the textured meshes");
+    for n in data {
+        let path = &n["path"];
+        let points = main["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| &m["path"] == path)
+            .and_then(|m| m["attributes"]["usd::usdgeom::mesh"]["points"].as_array())
+            .map(Vec::len);
+        let st = n["attributes"][rvt::ifc::TEXTURE_COORDINATES_KEY]
+            .as_array()
+            .map(Vec::len);
+        assert!(st.is_some() && st == points, "{path}: {st:?} vs {points:?}");
+        let file = n["attributes"][rvt::ifc::GLTF_MATERIAL_KEY]["pbrMetallicRoughness"]
+            ["baseColorTexture"]
+            .as_str()
+            .expect("image");
+        assert_eq!(std::fs::read(x.join(file)).unwrap(), PNG);
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
