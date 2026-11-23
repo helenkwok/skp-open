@@ -393,7 +393,7 @@ dependencies = [
 [[package]]
 name = "craft-atomic"
 version = "0.1.0"
-source = "git+https://github.com/helenkwok/rvt-open?rev=e001e7af1c48ffe3ac9af03c8722f264a6642257#e001e7af1c48ffe3ac9af03c8722f264a6642257"
+source = "git+https://github.com/helenkwok/rvt-open?rev=4aad512b59ab1cd2ea7f5675e9fd012b2b457060#4aad512b59ab1cd2ea7f5675e9fd012b2b457060"
 dependencies = [
  "rustix",
 ]
@@ -960,7 +960,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 [[package]]
 name = "rvt-dwg"
 version = "0.1.0"
-source = "git+https://github.com/helenkwok/rvt-open?rev=e001e7af1c48ffe3ac9af03c8722f264a6642257#e001e7af1c48ffe3ac9af03c8722f264a6642257"
+source = "git+https://github.com/helenkwok/rvt-open?rev=4aad512b59ab1cd2ea7f5675e9fd012b2b457060#4aad512b59ab1cd2ea7f5675e9fd012b2b457060"
 dependencies = [
  "acadrust",
  "serde",
@@ -971,7 +971,7 @@ dependencies = [
 [[package]]
 name = "rvt-open"
 version = "0.1.0"
-source = "git+https://github.com/helenkwok/rvt-open?rev=e001e7af1c48ffe3ac9af03c8722f264a6642257#e001e7af1c48ffe3ac9af03c8722f264a6642257"
+source = "git+https://github.com/helenkwok/rvt-open?rev=4aad512b59ab1cd2ea7f5675e9fd012b2b457060#4aad512b59ab1cd2ea7f5675e9fd012b2b457060"
 dependencies = [
  "anyhow",
  "arrow-array",

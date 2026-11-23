@@ -80,7 +80,7 @@ fn every_corpus_file_converts_with_its_counts_and_box() {
                 "{rel}: DXF faces"
             );
             let step = std::fs::read_to_string(out.join(format!("{name}.ifc"))).unwrap();
-            // One face set per element, except that a body drawing several textured
+            // One face set per element, except that a textured body drawing several
             // materials is one face set per material (an IFC4 texture map lays one
             // image on a whole face set).
             let textured = |m: &usize| model.materials.get(*m).is_some_and(|i| i.texture.is_some());
@@ -103,7 +103,8 @@ fn every_corpus_file_converts_with_its_counts_and_box() {
                         drawn.dedup();
                         let split = !uvs.is_empty()
                             && uvs.len() == vertices_feet.len()
-                            && drawn.iter().filter(|m| textured(m)).count() >= 2;
+                            && drawn.len() >= 2
+                            && drawn.iter().any(textured);
                         if split { drawn.len() } else { 1 }
                     }
                     rvt::ifc::entities::IfcEntity::BuildingElement {
