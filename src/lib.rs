@@ -69,8 +69,9 @@ impl Format {
     }
 }
 
-/// Write `model` as `format` to `out` (an OBJ also writes its `.mtl` beside it, and
-/// an OBJ or a USD layer the images of its textured materials). Returns notes on what
+/// Write `model` as `format` to `out` (an OBJ also writes its `.mtl` beside it, an
+/// OBJ or a USD layer the images of its textured materials, and an IFCX of a textured
+/// model its texture layer and images). Returns notes on what
 /// the format left out.
 pub fn write_format(model: &IfcModel, format: Format, out: &Path) -> Result<Vec<String>> {
     let mut notes = Vec::new();
@@ -81,10 +82,12 @@ pub fn write_format(model: &IfcModel, format: Format, out: &Path) -> Result<Vec<
         Format::Ifcx => {
             std::fs::write(out, rvt::ifc::ifcx_writer::write_ifcx(model)?)?;
             if textured {
-                notes.push(
-                    "IFCX has no texture coordinates: textured materials keep their average colour"
-                        .into(),
-                );
+                // The textures are a layer over the main file, which keeps the colours.
+                let layer = ifcx_texture_layer_path(out);
+                let (text, files) = rvt::ifc::write_ifcx_texture_layer(model)?;
+                std::fs::write(&layer, text)?;
+                notes.push(format!("texture layer {}", layer.display()));
+                notes.extend(write_images(dir, files)?);
             }
         }
         Format::Glb => std::fs::write(out, rvt::ifc::gltf::model_to_glb(model))?,
@@ -127,6 +130,12 @@ pub fn write_format(model: &IfcModel, format: Format, out: &Path) -> Result<Vec<
         }
     }
     Ok(notes)
+}
+
+/// Where the IFCX texture layer of `out` goes: `<name>.textures.ifcx` beside it.
+pub fn ifcx_texture_layer_path(out: &Path) -> std::path::PathBuf {
+    let stem = out.file_stem().and_then(|n| n.to_str()).unwrap_or("model");
+    out.with_file_name(format!("{stem}.textures.ifcx"))
 }
 
 /// Write `files` (path relative to `dir`, bytes) under `dir`; a note of how many.
