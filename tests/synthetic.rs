@@ -135,6 +135,58 @@ fn a_built_model_converts_to_every_format() {
     }
 }
 
+/// A definition SketchUp classified (its `AppliedSchemaTypes` dictionary) is written
+/// as that IFC class; one the writer cannot write stays what it was. Both containers.
+#[test]
+fn classified_definitions_keep_their_ifc_class() {
+    use skpwright::{Attributes, Dictionary, Owner, Value};
+    let mut built = common::built();
+    let applied = |class: &str| Dictionary {
+        name: "AppliedSchemaTypes".into(),
+        entries: vec![("IFC 2x3".into(), Value::Text(class.into()))],
+        flag: 0,
+    };
+    // "Plate" is a door; "Part", which places the plate, a storey (no element).
+    built.dictionaries = vec![
+        Attributes {
+            owner: Owner::Definition(1),
+            dictionaries: vec![applied("IfcDoor")],
+        },
+        Attributes {
+            owner: Owner::Definition(0),
+            dictionaries: vec![applied("IfcBuildingStorey")],
+        },
+    ];
+    for target in [SkpTarget::Container2026, SkpTarget::parse("2017").unwrap()] {
+        let dir = common::scratch("classified");
+        let path = dir.join("classified.skp");
+        write_skp(&built, &path, target).unwrap();
+        let skp = skpwright::Model::read(&path).unwrap();
+        let (model, st) = from_skp::skp_to_model(&skp, "classified");
+        assert_eq!(st.classified, 2, "the two plates, {target:?}: {st:?}");
+        assert_eq!(
+            st.classified_unwritten, 2,
+            "the two parts, {target:?}: {st:?}"
+        );
+        let out = dir.join("classified.ifc");
+        write_format(&model, Format::Ifc, &out).unwrap();
+        let step = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(step.matches("IFCDOOR(").count(), 2, "{target:?}");
+        assert_eq!(step.matches("IFCELEMENTASSEMBLY(").count(), 2, "{target:?}");
+        assert_eq!(
+            step.matches("IFCBUILDINGELEMENTPROXY(").count(),
+            1,
+            "the root box, {target:?}"
+        );
+        assert!(step.contains("'SKP_AppliedSchemaTypes'"), "{target:?}");
+        assert!(
+            step.contains("'IfcBuildingStorey'"),
+            "the classification is kept, {target:?}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
 /// A 2 x 2 RGB PNG.
 const PNG: &[u8] = &[
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
