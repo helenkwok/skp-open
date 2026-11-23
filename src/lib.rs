@@ -69,13 +69,24 @@ impl Format {
     }
 }
 
-/// Write `model` as `format` to `out` (an OBJ also writes its `.mtl` beside it).
-/// Returns notes on what the format left out.
+/// Write `model` as `format` to `out` (an OBJ also writes its `.mtl` beside it, and
+/// an OBJ or a USD layer the images of its textured materials). Returns notes on what
+/// the format left out.
 pub fn write_format(model: &IfcModel, format: Format, out: &Path) -> Result<Vec<String>> {
     let mut notes = Vec::new();
+    let dir = out.parent().unwrap_or(Path::new("."));
+    let textured = model.materials.iter().any(|m| m.texture.is_some());
     match format {
         Format::Ifc => std::fs::write(out, rvt::ifc::write_step(model))?,
-        Format::Ifcx => std::fs::write(out, rvt::ifc::ifcx_writer::write_ifcx(model)?)?,
+        Format::Ifcx => {
+            std::fs::write(out, rvt::ifc::ifcx_writer::write_ifcx(model)?)?;
+            if textured {
+                notes.push(
+                    "IFCX has no texture coordinates: textured materials keep their average colour"
+                        .into(),
+                );
+            }
+        }
         Format::Glb => std::fs::write(out, rvt::ifc::gltf::model_to_glb(model))?,
         Format::Obj => {
             let mtl = out.with_extension("mtl");
@@ -83,16 +94,31 @@ pub fn write_format(model: &IfcModel, format: Format, out: &Path) -> Result<Vec<
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("model.mtl");
-            let (obj, mtl_text) = rvt::ifc::obj::model_to_obj(model, mtl_name);
+            let (obj, mtl_text, files) = rvt::ifc::obj::model_to_obj_textured(model, mtl_name);
             std::fs::write(out, obj)?;
             std::fs::write(&mtl, mtl_text)?;
+            notes.extend(write_images(dir, files)?);
         }
-        Format::Usda => std::fs::write(out, rvt::ifc::write_usda(model)?)?,
-        Format::Usdc => std::fs::write(out, rvt::ifc::write_usdc(model)?)?,
+        Format::Usda => {
+            let (text, files) = rvt::ifc::write_usda_textured(model)?;
+            std::fs::write(out, text)?;
+            notes.extend(write_images(dir, files)?);
+        }
+        Format::Usdc => {
+            let (bytes, files) = rvt::ifc::write_usdc_textured(model)?;
+            std::fs::write(out, bytes)?;
+            notes.extend(write_images(dir, files)?);
+        }
         Format::Frag => {
             let graph = rvt::ifc::IfcxGraph::from_model(model, rvt::ifc::GraphOptions::default());
             let (bytes, _) = rvt::ifc::frag_writer::write_frag_graph(&graph)?;
             std::fs::write(out, bytes)?;
+            if textured {
+                notes.push(
+                    "Fragments materials are colours: textured materials keep their average colour"
+                        .into(),
+                );
+            }
         }
         Format::Dxf => {
             let (text, faces) = dxf::write_dxf(model);
@@ -101,6 +127,19 @@ pub fn write_format(model: &IfcModel, format: Format, out: &Path) -> Result<Vec<
         }
     }
     Ok(notes)
+}
+
+/// Write `files` (path relative to `dir`, bytes) under `dir`; a note of how many.
+fn write_images(dir: &Path, files: Vec<(String, Vec<u8>)>) -> Result<Option<String>> {
+    let n = files.len();
+    for (name, bytes) in files {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, bytes)?;
+    }
+    Ok((n > 0).then(|| format!("{n} texture images beside the file")))
 }
 
 /// Read a `.skp` and map it to rvt-open's model.

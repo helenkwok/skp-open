@@ -7,13 +7,16 @@
 //! An instance that places others becomes an element assembly that
 //! aggregates them. Names, layers and attribute dictionaries ride along as
 //! property sets. Hidden instances, hidden faces and anything on a hidden
-//! layer are left out, as an export of what SketchUp shows would.
+//! layer are left out, as an export of what SketchUp shows would. A textured
+//! material carries its image, and the faces drawn in it their texture
+//! coordinates, placed as SketchUp places them (the material's size, the
+//! face's own texture position).
 
 use rvt::ifc::entities::{
     BrepTriangle, IfcEntity, Property, PropertySet, PropertyValue, SolidShape,
 };
-use rvt::ifc::{ExportConvention, IfcModel, MaterialInfo, RevitGlobalIds};
-use skpwright::{Material, Model, Owner, Value};
+use rvt::ifc::{ExportConvention, IfcModel, MaterialInfo, MaterialTexture, RevitGlobalIds};
+use skpwright::{Material, Model, Owner, Side, Value};
 use std::collections::HashMap;
 
 const FT: f64 = 0.3048;
@@ -34,8 +37,13 @@ pub struct FromSkpStats {
     pub faces_hidden: usize,
     /// Instances left out for being hidden, on a hidden layer or without a definition.
     pub instances_skipped: usize,
-    /// Faces of a textured material, drawn in the material's colour only.
+    /// Faces drawn in a textured material's image, with texture coordinates.
     pub textured_faces: usize,
+    /// Faces of a textured material without an image (or a size) to place,
+    /// drawn in the material's colour.
+    pub textured_faces_flat: usize,
+    /// Faces with no material on their front, of their own or inherited, drawn in their back's.
+    pub faces_back_material: usize,
     /// Faces that could not be cut into triangles.
     pub faces_unfilled: usize,
     /// Attribute dictionaries written as property sets.
@@ -132,11 +140,31 @@ fn material_info(m: &Material) -> MaterialInfo {
             ..
         } => (name, avg_rgba.unwrap_or([160, 160, 160, 255]), *opacity),
     };
+    // A colourised texture is drawn as its image, without the tint.
+    let texture = match m {
+        Material::Textured {
+            texture,
+            applied_size_in,
+            image_bytes: Some(bytes),
+            ..
+        } => MaterialTexture::new(
+            bytes.clone(),
+            texture.as_deref().map(file_name),
+            applied_size_in.map(|(w, h)| [w / 12.0, h / 12.0]),
+        ),
+        _ => None,
+    };
     MaterialInfo {
         name: name.clone(),
         color_packed: Some(u32::from(rgba[0]) | u32::from(rgba[1]) << 8 | u32::from(rgba[2]) << 16),
         transparency: (opacity < 1.0).then(|| (1.0 - opacity).clamp(0.0, 1.0)),
+        texture,
     }
+}
+
+/// The last part of a texture's path, as SketchUp stores it (either slash).
+fn file_name(path: &str) -> String {
+    path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -222,11 +250,14 @@ fn triangulate(mesh: &skpwright::Mesh, f: &skpwright::MeshFace) -> Option<Vec<[u
     )
 }
 
-/// One element's triangles: points in feet, triangles, a material per triangle.
+/// One element's triangles: points in feet, triangles, a material per
+/// triangle, and per point its texture coordinates (empty when no face is
+/// textured).
 struct Body {
     points: Vec<[f64; 3]>,
     triangles: Vec<BrepTriangle>,
     materials: Vec<usize>,
+    uvs: Vec<[f64; 2]>,
 }
 
 struct Walk<'a> {
@@ -291,6 +322,7 @@ impl<'a> Walk<'a> {
                 name: "Default".to_string(),
                 color_packed: Some(u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16),
                 transparency: None,
+                texture: None,
             });
             self.out.materials.len() - 1
         })
@@ -311,13 +343,16 @@ impl<'a> Walk<'a> {
         let m = self.m;
         let mesh = &m.geometry[run].mesh;
         let flip = det3(world) < 0.0;
-        let mut remap: HashMap<u32, u32> = HashMap::new();
+        // A point of an untextured face is shared (`None`); a textured face
+        // has its own, its coordinates being its own.
+        let mut remap: HashMap<(u32, Option<usize>), u32> = HashMap::new();
         let mut body = Body {
             points: Vec::new(),
             triangles: Vec::new(),
             materials: Vec::new(),
+            uvs: Vec::new(),
         };
-        for f in &mesh.faces {
+        for (face_index, f) in mesh.faces.iter().enumerate() {
             if f.hidden || !self.layer_visible(f.layer) {
                 self.st.faces_hidden += 1;
                 continue;
@@ -327,26 +362,57 @@ impl<'a> Walk<'a> {
                 continue;
             };
             self.st.faces += 1;
-            let slot = f.front_material.filter(|s| *s != 0).unwrap_or(inherited);
-            let material = self.slot_material.get(&slot).copied().filter(|_| slot != 0);
-            let material = match material {
+            // The front's own material, else the enclosing instance's (which
+            // paints a front with none), else the back's own. One side is
+            // written; the other side's own paint is not.
+            let own = |s: Option<u16>| s.filter(|s| *s != 0 && self.slot_material.contains_key(s));
+            let (slot, side) = match (
+                own(f.front_material),
+                own(Some(inherited)),
+                own(f.back_material),
+            ) {
+                (Some(s), _, _) | (None, Some(s), _) => (s, Side::Front),
+                (None, None, Some(s)) => {
+                    self.st.faces_back_material += 1;
+                    (s, Side::Back)
+                }
+                (None, None, None) => (0, Side::Front),
+            };
+            let material = match self.slot_material.get(&slot).copied().filter(|_| slot != 0) {
                 Some(i) => i,
                 None => {
                     self.st.faces_default += 1;
                     self.default_material()
                 }
             };
-            if matches!(
-                self.m.materials.get(material),
-                Some(Material::Textured { .. })
-            ) {
+            let textured = self
+                .out
+                .materials
+                .get(material)
+                .is_some_and(|i| i.texture.is_some());
+            let uv = if textured {
+                m.applied_size_of(slot)
+                    .and_then(|size| f.uv_xform(side, size))
+            } else {
+                None
+            };
+            if uv.is_some() {
                 self.st.textured_faces += 1;
+            } else if matches!(m.materials.get(material), Some(Material::Textured { .. })) {
+                self.st.textured_faces_flat += 1;
             }
+            let key = uv.as_ref().map(|_| face_index);
             for t in tris {
                 let mut ix = t.map(|v| {
-                    *remap.entry(v).or_insert_with(|| {
-                        let p = apply(world, mesh.vertices[v as usize]);
+                    *remap.entry((v, key)).or_insert_with(|| {
+                        let local = mesh.vertices[v as usize];
+                        let p = apply(world, local);
                         body.points.push([p[0] / FT, p[1] / FT, p[2] / FT]);
+                        if let Some(x) = &uv {
+                            body.uvs.resize(body.points.len() - 1, [0.0; 2]);
+                            let [u, w] = x.apply(local);
+                            body.uvs.push([u, w]);
+                        }
                         (body.points.len() - 1) as u32
                     })
                 });
@@ -358,6 +424,9 @@ impl<'a> Walk<'a> {
             }
         }
         self.st.triangles += body.triangles.len();
+        if !body.uvs.is_empty() {
+            body.uvs.resize(body.points.len(), [0.0; 2]);
+        }
         (!body.triangles.is_empty()).then_some(body)
     }
 
@@ -454,6 +523,7 @@ impl<'a> Walk<'a> {
                     } else {
                         b.materials
                     },
+                    uvs: b.uvs,
                 };
                 (Some(shape), uniform)
             }
