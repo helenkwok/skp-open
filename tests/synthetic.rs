@@ -186,3 +186,108 @@ fn classified_definitions_keep_their_ifc_class() {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+/// A 2 x 2 RGB PNG.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x02, 0x00, 0x00, 0x00, 0xfd, 0xd4, 0x9a,
+    0x73, 0x00, 0x00, 0x00, 0x11, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0x00, 0x04,
+    0x20, 0xe2, 0x3f, 0x10, 0x00, 0x00, 0x1e, 0xef, 0x05, 0xfb, 0x35, 0x81, 0xa0, 0xc0, 0x00, 0x00,
+    0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+#[test]
+fn textured_faces_carry_their_image_and_coordinates() {
+    use rvt::ifc::entities::{IfcEntity, SolidShape};
+    let mut skp = common::built();
+    // The red becomes an image 1 m wide and 2 m tall per repeat; the plate is
+    // painted on its back only.
+    skp.materials[0] = skpwright::Material::Textured {
+        name: "Checker".into(),
+        texture: Some("C:\\maps\\checker.png".into()),
+        applied_size_in: Some((1.0 / 0.0254, 2.0 / 0.0254)),
+        jpeg_quality: None,
+        image_bytes: Some(PNG.to_vec()),
+        avg_rgba: Some([128, 128, 128, 255]),
+        colorized: false,
+        texture_avg_rgba: None,
+        colorize_type: 0,
+        opacity: 1.0,
+    };
+    skp.geometry[0].mesh.faces[0].back_material = Some(1);
+    let (model, st) = from_skp::skp_to_model(&skp, "textured");
+    assert_eq!(
+        st.textured_faces,
+        6 + 2,
+        "the box, and each plate by its back: {st:?}"
+    );
+    assert_eq!(st.faces_back_material, 2, "{st:?}");
+    assert_eq!(st.faces_default, 2 * 6, "{st:?}");
+    let t = model.materials[0].texture.as_ref().expect("the image");
+    assert_eq!(t.name.as_deref(), Some("checker.png"));
+    assert_eq!(t.mime_type, "image/png");
+    let size = t.size_feet.expect("size");
+    assert!((size[0] - 1.0 / 0.3048).abs() < 1e-9 && (size[1] - 2.0 / 0.3048).abs() < 1e-9);
+
+    let body = model.entities.iter().find_map(|e| match e {
+        IfcEntity::BuildingElement {
+            name,
+            solid_shape:
+                Some(SolidShape::TriangulatedFaceSet {
+                    vertices_feet, uvs, ..
+                }),
+            ..
+        } if name == "Model geometry" => Some((vertices_feet, uvs)),
+        _ => None,
+    });
+    let (points, uvs) = body.expect("the box");
+    assert_eq!(points.len(), 6 * 4, "a textured face keeps its own points");
+    assert_eq!(uvs.len(), points.len());
+    // The top face (z = 1 m) maps x across 1 m and y across 2 m: its corner
+    // (1, 1, 1) is at (1, 0.5). The side faces meeting there keep their own.
+    let ft = 1.0 / 0.3048;
+    let corner: Vec<[f64; 2]> = points
+        .iter()
+        .zip(uvs)
+        .filter(|(p, _)| p.iter().all(|c| (c - ft).abs() < 1e-9))
+        .map(|(_, uv)| *uv)
+        .collect();
+    assert_eq!(corner.len(), 3, "one point per face at the corner");
+    assert!(
+        corner
+            .iter()
+            .any(|uv| (uv[0] - 1.0).abs() < 1e-9 && (uv[1] - 0.5).abs() < 1e-9),
+        "{corner:?}"
+    );
+
+    let dir = common::scratch("textured");
+    write_format(&model, Format::Glb, &dir.join("t.glb")).unwrap();
+    let glb = std::fs::read(dir.join("t.glb")).unwrap();
+    let len = u32::from_le_bytes([glb[12], glb[13], glb[14], glb[15]]) as usize;
+    let doc: serde_json::Value = serde_json::from_slice(&glb[20..20 + len]).unwrap();
+    assert_eq!(doc["images"].as_array().map(Vec::len), Some(1));
+    let notes = write_format(&model, Format::Obj, &dir.join("t.obj")).unwrap();
+    assert!(
+        notes.iter().any(|n| n.contains("1 texture images")),
+        "{notes:?}"
+    );
+    let mtl = std::fs::read_to_string(dir.join("t.mtl")).unwrap();
+    let image = mtl
+        .lines()
+        .find_map(|l| l.strip_prefix("map_Kd "))
+        .expect("map_Kd");
+    assert_eq!(std::fs::read(dir.join(image)).unwrap(), PNG);
+    write_format(&model, Format::Usda, &dir.join("t.usda")).unwrap();
+    let usda = std::fs::read_to_string(dir.join("t.usda")).unwrap();
+    assert!(usda.contains("UsdUVTexture") && usda.contains("primvars:st"));
+    assert_eq!(
+        std::fs::read(dir.join("textures").join(image)).unwrap(),
+        PNG
+    );
+    let step = {
+        write_format(&model, Format::Ifc, &dir.join("t.ifc")).unwrap();
+        std::fs::read_to_string(dir.join("t.ifc")).unwrap()
+    };
+    assert!(step.contains("IFCBLOBTEXTURE(") && step.contains("IFCINDEXEDTRIANGLETEXTUREMAP("));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
