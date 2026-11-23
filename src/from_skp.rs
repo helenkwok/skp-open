@@ -17,7 +17,6 @@ use skpwright::{Material, Model, Owner, Value};
 use std::collections::HashMap;
 
 const FT: f64 = 0.3048;
-const NO_MATERIAL: usize = usize::MAX;
 const MAX_DEPTH: usize = 64;
 
 type M4 = [f64; 16];
@@ -41,6 +40,8 @@ pub struct FromSkpStats {
     pub faces_unfilled: usize,
     /// Attribute dictionaries written as property sets.
     pub attribute_sets: usize,
+    /// Faces with no material of their own or inherited, drawn in the style's front colour.
+    pub faces_default: usize,
 }
 
 /// Map `model` to an [`IfcModel`] named `name`.
@@ -236,6 +237,8 @@ struct Walk<'a> {
     instance_name: HashMap<u32, &'a str>,
     definition_of: HashMap<u32, usize>,
     sets: HashMap<usize, Vec<PropertySet>>,
+    /// The material for unpainted faces, added on first use.
+    default_material: Option<usize>,
 }
 
 impl<'a> Walk<'a> {
@@ -272,7 +275,25 @@ impl<'a> Walk<'a> {
                 .collect(),
             definition_of: m.definition_links.iter().copied().collect(),
             sets,
+            default_material: None,
         }
+    }
+
+    /// SketchUp draws a face with no material in the style's front colour.
+    fn default_material(&mut self) -> usize {
+        *self.default_material.get_or_insert_with(|| {
+            let [r, g, b, _] = self
+                .m
+                .rendering
+                .as_ref()
+                .map_or([255, 255, 255, 255], |o| o.front_color);
+            self.out.materials.push(MaterialInfo {
+                name: "Default".to_string(),
+                color_packed: Some(u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16),
+                transparency: None,
+            });
+            self.out.materials.len() - 1
+        })
     }
 
     fn layer_visible(&self, slot: u16) -> bool {
@@ -287,7 +308,8 @@ impl<'a> Walk<'a> {
 
     /// The triangles of the faces `run` itself holds, placed by `world`.
     fn mesh(&mut self, run: usize, world: &M4, inherited: u16) -> Option<Body> {
-        let mesh = &self.m.geometry[run].mesh;
+        let m = self.m;
+        let mesh = &m.geometry[run].mesh;
         let flip = det3(world) < 0.0;
         let mut remap: HashMap<u32, u32> = HashMap::new();
         let mut body = Body {
@@ -306,12 +328,14 @@ impl<'a> Walk<'a> {
             };
             self.st.faces += 1;
             let slot = f.front_material.filter(|s| *s != 0).unwrap_or(inherited);
-            let material = self
-                .slot_material
-                .get(&slot)
-                .copied()
-                .filter(|_| slot != 0)
-                .unwrap_or(NO_MATERIAL);
+            let material = self.slot_material.get(&slot).copied().filter(|_| slot != 0);
+            let material = match material {
+                Some(i) => i,
+                None => {
+                    self.st.faces_default += 1;
+                    self.default_material()
+                }
+            };
             if matches!(
                 self.m.materials.get(material),
                 Some(Material::Textured { .. })
@@ -420,14 +444,12 @@ impl<'a> Walk<'a> {
         }
         let (shape, material_index) = match body {
             Some(b) => {
-                let first = b.materials.first().copied().filter(|m| *m != NO_MATERIAL);
+                let first = b.materials.first().copied();
                 let uniform = first.filter(|f| b.materials.iter().all(|m| m == f));
                 let shape = SolidShape::TriangulatedFaceSet {
                     vertices_feet: b.points,
                     triangles: b.triangles,
-                    face_materials: if uniform.is_some()
-                        || b.materials.iter().all(|m| *m == NO_MATERIAL)
-                    {
+                    face_materials: if uniform.is_some() {
                         Vec::new()
                     } else {
                         b.materials
