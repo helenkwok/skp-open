@@ -187,6 +187,58 @@ fn classified_definitions_keep_their_ifc_class() {
     }
 }
 
+/// A placement's GUID is its GlobalId, as SketchUp's own IFC export writes it, also for
+/// a group (which that export gives none); a placement met twice (inside a definition
+/// placed twice) keeps it once. A placement's own attribute dictionaries ride along.
+#[test]
+fn placements_keep_their_guid_and_attributes() {
+    use skpwright::{Attributes, Dictionary, Owner, Value};
+    let mut built = common::built();
+    built.geometry[2].placed[0].guid = "f11657414e974e4ea53a77e1a1c5ed6e".into();
+    built.geometry[2].placed[1].guid = "d4a394cccc23a1488fcc93b9441f7e16".into();
+    built.geometry[2].placed[1].is_group = true;
+    built.geometry[1].placed[0].guid = "363032cd4e2acb4ea18b1d078ad75a91".into();
+    built.dictionaries = vec![Attributes {
+        owner: Owner::Instance(2, 1),
+        dictionaries: vec![Dictionary {
+            name: "Tags".into(),
+            entries: vec![("Number".into(), Value::Double(42.5))],
+            flag: 0,
+        }],
+    }];
+    for target in [SkpTarget::Container2026, SkpTarget::parse("2017").unwrap()] {
+        let dir = common::scratch("guids");
+        let path = dir.join("guids.skp");
+        write_skp(&built, &path, target).unwrap();
+        let (model, _) = skp_open::skp_to_model(&path).unwrap();
+        let out = dir.join("guids.ifc");
+        write_format(&model, Format::Ifc, &out).unwrap();
+        let step = std::fs::read_to_string(&out).unwrap();
+        for id in [
+            "11LnRnbqvEJgKwT_6XnUrk",
+            "3CbAFK8yn8eO$Caxb47tuM",
+            "3DCZ0sAavEow6B7GUArrgH",
+        ] {
+            assert_eq!(
+                step.matches(&format!("('{id}',")).count(),
+                1,
+                "{id} {target:?}"
+            );
+        }
+        let ids: Vec<&str> = step
+            .lines()
+            .filter(|l| l.contains("IFCELEMENTASSEMBLY(") || l.contains("IFCBUILDINGELEMENTPROXY("))
+            .filter_map(|l| l.split('\'').nth(1))
+            .collect();
+        assert_eq!(ids.len(), 5, "{target:?}");
+        let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
+        assert_eq!(unique.len(), 5, "GlobalIds are unique, {target:?}: {ids:?}");
+        assert!(step.contains("'SKP_Tags'"), "{target:?}");
+        assert!(step.contains("IFCREAL(42.5)"), "{target:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
 /// A 2 x 2 RGB PNG.
 const PNG: &[u8] = &[
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
