@@ -18,7 +18,6 @@ use rvt::ifc::entities::{
     BrepTriangle, IfcEntity, Property, PropertySet, PropertyValue, SolidShape,
 };
 use rvt::ifc::{ExportConvention, IfcModel, MaterialInfo, MaterialTexture, RevitGlobalIds};
-use rvt::revit_global_ids::{canonical_guid, compress_ifc_guid};
 use skpwright::{Material, Model, Owner, Side, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -984,7 +983,21 @@ fn placement_global_id(hex: &str) -> Option<String> {
     for (i, slot) in b.iter_mut().enumerate() {
         *slot = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
     }
-    (b != [0; 16]).then(|| compress_ifc_guid(canonical_guid(b)))
+    if b == [0; 16] {
+        return None;
+    }
+    // The first three fields are stored little-endian.
+    b[0..4].reverse();
+    b[4..6].reverse();
+    b[6..8].reverse();
+    const DIGITS: &[u8; 64] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$";
+    let n = u128::from_be_bytes(b);
+    Some(
+        (0..22)
+            .rev()
+            .map(|k| char::from(DIGITS[((n >> (6 * k)) & 63) as usize]))
+            .collect(),
+    )
 }
 
 fn property_value(v: &Value) -> PropertyValue {
@@ -1131,7 +1144,7 @@ mod tests {
             PropertyValue::PositiveLengthFeet(f) => assert!((f * FT - 2.1).abs() < 1e-9),
             other => panic!("{other:?}"),
         }
-        assert_eq!(props[2].value, PropertyValue::Label("D-01".into()));
+        assert!(matches!(&props[2].value, PropertyValue::Label(t) if t == "D-01"));
         let a = ClassAttrs::of(&tree, to_feet);
         assert!((a.height_feet.unwrap() * FT - 2.1).abs() < 1e-9);
         assert!((a.width_feet.unwrap() * FT - 0.9).abs() < 1e-9);
