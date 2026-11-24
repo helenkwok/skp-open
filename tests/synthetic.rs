@@ -234,7 +234,7 @@ fn placements_keep_their_guid_and_attributes() {
         let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
         assert_eq!(unique.len(), 5, "GlobalIds are unique, {target:?}: {ids:?}");
         assert!(step.contains("'SKP_Tags'"), "{target:?}");
-        assert!(step.contains("IFCREAL(42.5)"), "{target:?}");
+        assert!(step.contains("IFCREAL(42.500000)"), "{target:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

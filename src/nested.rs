@@ -95,20 +95,20 @@ pub fn parse(text: &str) -> HashMap<String, Vec<Dict>> {
                         value_kind = Some(kind.to_string());
                     }
                 }
-            } else if indent == field + 12 {
-                if let (Some(kind), Some(k)) = (value_kind.take(), key.take()) {
-                    let s = t.trim_end_matches(',');
-                    let v = match kind.as_str() {
-                        "Str" => Value::Text(unquote(s)),
-                        "F64" => s.parse().map_or(Value::Nil, Value::Double),
-                        "F32" => s.parse().map_or(Value::Nil, Value::Float),
-                        "I32" => s.parse().map_or(Value::Nil, Value::Int),
-                        "Bool" => Value::Bool(s != "0"),
-                        // Arrays and the rest are not attribute values.
-                        _ => Value::Nil,
-                    };
-                    f.dict.entries.push((k, v));
-                }
+            } else if indent == field + 12
+                && let (Some(kind), Some(k)) = (value_kind.take(), key.take())
+            {
+                let s = t.trim_end_matches(',');
+                let v = match kind.as_str() {
+                    "Str" => Value::Text(unquote(s)),
+                    "F64" => s.parse().map_or(Value::Nil, Value::Double),
+                    "F32" => s.parse().map_or(Value::Nil, Value::Float),
+                    "I32" => s.parse().map_or(Value::Nil, Value::Int),
+                    "Bool" => Value::Bool(s != "0"),
+                    // Arrays and the rest are not attribute values.
+                    _ => Value::Nil,
+                };
+                f.dict.entries.push((k, v));
             }
         } else if indent == field
             && let Some(list) = t.strip_prefix("guid: [")
