@@ -1008,7 +1008,29 @@ fn property_value(v: &Value) -> PropertyValue {
         Value::Double(f) => PropertyValue::Real(*f),
         Value::Bool(b) => PropertyValue::Boolean(*b),
         Value::Time(t) => PropertyValue::Integer(i64::from(*t)),
-        other => PropertyValue::Text(format!("{other:?}")),
+        Value::Array(items) => {
+            PropertyValue::Text(items.iter().map(value_text).collect::<Vec<_>>().join(", "))
+        }
+        other => PropertyValue::Text(value_text(other)),
+    }
+}
+
+/// A value as text: an array's items one after another, a point its coordinates.
+fn value_text(v: &Value) -> String {
+    match v {
+        Value::Nil => String::new(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Double(f) => f.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Time(t) => t.to_string(),
+        Value::Text(s) => s.clone(),
+        Value::Array(items) => format!(
+            "[{}]",
+            items.iter().map(value_text).collect::<Vec<_>>().join(", ")
+        ),
+        Value::Bytes8(b) => b.iter().map(|x| format!("{x:02x}")).collect(),
+        Value::Vector(p) | Value::Direction(p) => format!("{}, {}, {}", p[0], p[1], p[2]),
     }
 }
 
@@ -1153,5 +1175,7 @@ mod tests {
         assert!(!ifc4_predefined("IFCWALL", "FLOOR"));
         assert!(!ifc4_predefined("IFCFURNITURE", "CHAIR"));
         assert!((length_to_feet(0) - 1.0 / 12.0).abs() < 1e-12);
+        let list = Value::Array(vec![Value::Text("SketchUp".into()), Value::Int(2)]);
+        assert!(matches!(property_value(&list), PropertyValue::Text(t) if t == "SketchUp, 2"));
     }
 }
