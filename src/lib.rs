@@ -6,6 +6,7 @@
 
 pub mod dxf;
 pub mod from_skp;
+pub mod nested;
 pub mod to_skp;
 
 use anyhow::{Context, Result, bail};
@@ -153,9 +154,22 @@ fn write_images(dir: &Path, files: Vec<(String, Vec<u8>)>) -> Result<Option<Stri
 
 /// Read a `.skp` and map it to rvt-open's model.
 pub fn skp_to_model(path: &Path) -> Result<(IfcModel, from_skp::FromSkpStats)> {
-    let m = Model::read(path).map_err(|e| anyhow::anyhow!("{}: {}", path.display(), e.0))?;
+    let bytes = std::fs::read(path).with_context(|| path.display().to_string())?;
+    let m = Model::parse(&bytes).map_err(|e| anyhow::anyhow!("{}: {}", path.display(), e.0))?;
     let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("model");
-    Ok(from_skp::skp_to_model(&m, name))
+    // ponytail: the record listing is the whole file as text, so it is made only
+    // for a classified model, whose attribute values are the dictionaries it finds.
+    let classified = m.dictionaries.iter().any(|a| {
+        a.dictionaries
+            .iter()
+            .any(|d| d.name == "AppliedSchemaTypes")
+    });
+    let nested = if classified {
+        nested::read(&bytes)
+    } else {
+        Default::default()
+    };
+    Ok(from_skp::skp_to_model_nested(&m, name, &nested))
 }
 
 /// Which `.skp` to write: the 2026 container (SketchUp 2026 and 2027, which 2021 to 2025
